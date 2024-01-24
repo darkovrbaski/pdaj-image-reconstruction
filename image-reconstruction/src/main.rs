@@ -1,14 +1,18 @@
 use image::{DynamicImage, GenericImage, GenericImageView};
 use image_compare::Algorithm;
-use show_image::{create_window, ImageInfo, ImageView};
-use std::{collections::VecDeque, fs, process::Command};
+use show_image::{create_window, event, ImageInfo, ImageView};
+use std::{
+    collections::VecDeque,
+    fs::{self, File},
+    io::BufReader,
+};
 
 #[show_image::main]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let pieces_folder_path = "../examples/slika 3/";
+    let pieces_folder_path = "../examples/slika 2/";
     let image_pieces = load_images_from_folder(pieces_folder_path);
 
-    let org_image = image::open("../examples/picture3.jpg").unwrap();
+    let org_image = image::open("../examples/picture2.jpg").unwrap();
     let mut result_image = blank_image(&org_image);
 
     let mut current_x = 0;
@@ -29,7 +33,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // display_image(&sub_img);
         // display_image(&image_piece);
 
-        if compare_images_px(&sub_img, &image_piece) {
+        if compare_images_rgb(&sub_img, &image_piece) {
             place_image(&mut result_image, &image_piece, current_x, current_y);
             display_image(&result_image);
 
@@ -66,9 +70,15 @@ fn load_images_from_folder(folder_path: &str) -> Vec<image::DynamicImage> {
     if let Ok(entries) = fs::read_dir(folder_path) {
         for entry in entries {
             if let Ok(entry) = entry {
-                if let Ok(image) = image::open(entry.path()) {
+                if let Ok(image) = image::load(
+                    BufReader::new(File::open(entry.path()).unwrap()),
+                    image::ImageFormat::Png,
+                ) {
                     images.push(image)
                 }
+                // if let Ok(image) = image::open(entry.path()) {
+                //     images.push(image)
+                // }
             }
         }
     }
@@ -90,6 +100,7 @@ fn blank_image(image: &DynamicImage) -> DynamicImage {
     DynamicImage::new_rgb8(image.width(), image.height())
 }
 
+#[allow(dead_code)]
 fn compare_images_px(reference_image: &DynamicImage, test_image: &DynamicImage) -> bool {
     if reference_image.dimensions() != test_image.dimensions() {
         return false;
@@ -106,6 +117,7 @@ fn compare_images_px(reference_image: &DynamicImage, test_image: &DynamicImage) 
     true
 }
 
+#[allow(dead_code)]
 fn compare_images_luma(reference_image: &DynamicImage, test_image: &DynamicImage) -> bool {
     let score = image_compare::gray_similarity_structure(
         &Algorithm::MSSIMSimple,
@@ -115,9 +127,10 @@ fn compare_images_luma(reference_image: &DynamicImage, test_image: &DynamicImage
     .expect("Error: Images had different dimensions")
     .score;
     println!("s: {score}");
-    score > 0.95
+    score > 0.70
 }
 
+#[allow(dead_code)]
 fn compare_images_rgb(reference_image: &DynamicImage, test_image: &DynamicImage) -> bool {
     let score = image_compare::rgb_similarity_structure(
         &Algorithm::MSSIMSimple,
@@ -127,7 +140,7 @@ fn compare_images_rgb(reference_image: &DynamicImage, test_image: &DynamicImage)
     .expect("Error: Images had different dimensions")
     .score;
     println!("s: {score}");
-    score > 0.95
+    score > 0.20
 }
 
 fn display_image(image: &DynamicImage) {
@@ -139,5 +152,14 @@ fn display_image(image: &DynamicImage) {
     let window = create_window("image", Default::default()).unwrap();
     let _ = window.set_image("image", image);
 
-    let _ = Command::new("cmd.exe").arg("/c").arg("pause").status();
+    for event in window.event_channel().unwrap() {
+        if let event::WindowEvent::KeyboardInput(event) = event {
+            println!("{:#?}", event);
+            if event.input.key_code == Some(event::VirtualKeyCode::Escape)
+                && event.input.state.is_pressed()
+            {
+                break;
+            }
+        }
+    }
 }
