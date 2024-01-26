@@ -4,16 +4,18 @@ use show_image::{create_window, event, ImageInfo, ImageView};
 use std::{
     fs::{self, File},
     io::{BufReader, Read, Seek, SeekFrom},
+    thread,
+    thread::available_parallelism,
 };
 
 #[show_image::main]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let pieces_folder_path = "../examples/slika 1 - 1/";
+    let pieces_folder_path = "../examples/slika 2 -1/";
     let mut image_pieces = load_images_from_folder(pieces_folder_path);
     image_pieces.retain(|image| image.width() > 5 && image.height() > 5);
     println!("image_pieces: {}", image_pieces.len());
 
-    let org_image = load_image("../examples/picture1.jpg");
+    let org_image = load_image("../examples/picture2.jpg");
     let mut result_image = blank_image(&org_image);
 
     let mut current_x = 0;
@@ -34,7 +36,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
             // display_image(&sub_img);
             // display_image(&image_piece);
-            let calc_score = compare_images_mse(&sub_img, &image_piece);
+            let calc_score = parallel_mse(&sub_img, &image_piece);
 
             if max_score > calc_score {
                 match_piece = image_piece.clone();
@@ -61,6 +63,67 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn parallel_mse(reference_image: &DynamicImage, test_image: &DynamicImage) -> f64 {
+    if reference_image.dimensions() != test_image.dimensions() {
+        return 0.0;
+    }
+
+    let (width, height) = test_image.dimensions();
+    let num_threads = available_parallelism().unwrap().get() as u32;
+
+    let chunk_size = height / num_threads;
+
+    let handles: Vec<_> = (0..num_threads)
+        .into_iter()
+        .map(|i| {
+            let start_y = i * chunk_size;
+            let end_y = if i == num_threads - 1 {
+                height
+            } else {
+                (i + 1) * chunk_size
+            };
+
+            let image1 = reference_image.clone();
+            let image2 = test_image.clone();
+
+            thread::spawn(move || calculate_mse(&image1, &image2, start_y, end_y))
+        })
+        .collect();
+
+    let mse_sum: f64 = handles
+        .into_iter()
+        .map(|handel| handel.join().unwrap())
+        .sum();
+    let mse = mse_sum / (width * height) as f64;
+    mse
+}
+
+#[allow(dead_code)]
+fn calculate_mse(
+    reference_image: &DynamicImage,
+    test_image: &DynamicImage,
+    start_y: u32,
+    end_y: u32,
+) -> f64 {
+    let (width, _) = test_image.dimensions();
+
+    let mut sum_squared_diff = 0.0;
+    for y in start_y..end_y {
+        for x in 0..width {
+            let pixel1 = reference_image.to_rgb8().get_pixel(x, y).0;
+            let pixel2 = test_image.to_rgb8().get_pixel(x, y).0;
+
+            sum_squared_diff += ((pixel1[0] as f64 - pixel2[0] as f64).powi(2)
+                + (pixel1[1] as f64 - pixel2[1] as f64).powi(2)
+                + (pixel1[2] as f64 - pixel2[2] as f64).powi(2))
+                / 3.0;
+        }
+    }
+
+    // Calculate the mean squared error
+    sum_squared_diff
+}
+
 #[allow(dead_code)]
 fn compare_images_mse(reference_image: &DynamicImage, test_image: &DynamicImage) -> f64 {
     if reference_image.dimensions() != test_image.dimensions() {
@@ -77,10 +140,10 @@ fn compare_images_mse(reference_image: &DynamicImage, test_image: &DynamicImage)
             let pixel1 = reference_image.to_rgb8().get_pixel(x, y).0;
             let pixel2 = test_image.to_rgb8().get_pixel(x, y).0;
 
-            for c in 0..pixel1.len() {
-                let diff = f64::from(pixel1[c]) - f64::from(pixel2[c]);
-                sum_squared_diff += diff * diff;
-            }
+            sum_squared_diff += ((pixel1[0] as f64 - pixel2[0] as f64).powi(2)
+                + (pixel1[1] as f64 - pixel2[1] as f64).powi(2)
+                + (pixel1[2] as f64 - pixel2[2] as f64).powi(2))
+                / 3.0;
         }
     }
 
@@ -105,6 +168,16 @@ fn compare_images_px(reference_image: &DynamicImage, test_image: &DynamicImage) 
     }
 
     true
+}
+
+#[allow(dead_code)]
+fn compare_images_hybrid(reference_image: &DynamicImage, test_image: &DynamicImage) -> f64 {
+    let score =
+        image_compare::rgb_hybrid_compare(&reference_image.to_rgb8(), &test_image.to_rgb8())
+            .expect("Error: Images had different dimensions")
+            .score;
+    println!("s: {score}");
+    score
 }
 
 #[allow(dead_code)]
@@ -135,6 +208,9 @@ fn compare_images_rgb(reference_image: &DynamicImage, test_image: &DynamicImage)
 
 #[allow(dead_code)]
 fn compare_images_his(reference_image: &DynamicImage, test_image: &DynamicImage) -> f64 {
+    display_image(&reference_image);
+    display_image(&test_image);
+
     let score = image_compare::gray_similarity_histogram(
         image_compare::Metric::ChiSquare,
         &reference_image.to_luma8(),
