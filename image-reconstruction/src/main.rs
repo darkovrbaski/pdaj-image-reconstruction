@@ -1,6 +1,9 @@
+// Darko Vrbaski E2 145-2023
+use dialoguer::{console::Term, theme::ColorfulTheme, Select};
 use image::{DynamicImage, GenericImage, GenericImageView};
 use image_compare::Algorithm;
-use show_image::{create_window, event, ImageInfo, ImageView};
+use rayon::prelude::*;
+use show_image::{create_window, event, ImageInfo, ImageView, WindowProxy};
 use std::{
     fs::{self, File},
     io::{BufReader, Read, Seek, SeekFrom},
@@ -8,49 +11,124 @@ use std::{
     thread::available_parallelism,
 };
 
+fn select_image() -> Option<usize> {
+    // List of available images
+    let image_options = [
+        "image1.jpg",
+        "image1-1.jpg",
+        "image2.jpg",
+        "image2-2.jpg",
+        "image3.jpg",
+        "image4.jpg",
+        "image5.jpg",
+    ];
+
+    // Create a select prompt
+    Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("Select an image:")
+        .items(&image_options)
+        .default(0) // Set the default selected item index
+        .interact_on_opt(&Term::stderr())
+        .unwrap_or_else(|e| {
+            eprintln!("Error reading user input.");
+            eprintln!("{}", e);
+            std::process::exit(1);
+        })
+}
+
+fn idx_to_image_path(index: usize) -> (&'static str, &'static str) {
+    let image_paths = [
+        ("../examples/picture1.jpg", "../examples/slika 1/"),
+        ("../examples/picture1.jpg", "../examples/slika 1 - 1/"),
+        ("../examples/picture2.jpg", "../examples/slika 2/"),
+        ("../examples/picture2.jpg", "../examples/slika 2 - 1/"),
+        ("../examples/picture3.jpg", "../examples/slika 3/"),
+        ("../examples/picture4.jpg", "../examples/slika 4/"),
+        ("../examples/picture5.jpg", "../examples/slika 5/"),
+    ];
+
+    (image_paths[index].0, image_paths[index].1)
+}
+
 #[show_image::main]
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let pieces_folder_path = "../examples/slika 2 -1/";
-    let mut image_pieces = load_images_from_folder(pieces_folder_path);
+fn main() {
+    let selected_option = select_image();
+    let selected_image = match selected_option {
+        Some(index) => {
+            let selected_image = [
+                "image1.jpg",
+                "image1-1.jpg",
+                "image2.jpg",
+                "image2-1.jpg",
+                "image3.jpg",
+                "image4.jpg",
+                "image5.jpg",
+            ][index];
+            println!("You selected: {}", selected_image);
+            idx_to_image_path(index)
+        }
+        None => {
+            println!("No image selected.");
+            return;
+        }
+    };
+
+    let mut image_pieces = load_images_from_folder(selected_image.1);
     image_pieces.retain(|image| image.width() > 5 && image.height() > 5);
     println!("image_pieces: {}", image_pieces.len());
 
-    let org_image = load_image("../examples/picture2.jpg");
+    let org_image = load_image(selected_image.0);
+
+    let window = create_window("image", Default::default()).unwrap();
+
+    let time = std::time::Instant::now();
+    let result_image = reconstruct_image(&org_image, &mut image_pieces, &window);
+    println!("Time: {} seconds", time.elapsed().as_secs_f32());
+
+    println!("Close the window or press ESC to exit.");
+    display_image(&result_image, &window, true);
+}
+
+fn reconstruct_image(
+    org_image: &DynamicImage,
+    image_pieces: &mut Vec<DynamicImage>,
+    window: &WindowProxy,
+) -> DynamicImage {
     let mut result_image = blank_image(&org_image);
 
     let mut current_x = 0;
     let mut current_y = 0;
 
     while image_pieces.len() > 0 {
-        let mut match_piece = DynamicImage::new_rgb8(0, 0);
-        let mut match_index = 0;
-        let mut max_score = f64::MAX;
-
-        for (index, image_piece) in image_pieces.iter().enumerate() {
-            let sub_img = crop_image(
-                &org_image,
-                current_x,
-                current_y,
-                image_piece.width(),
-                image_piece.height(),
+        let (match_index, match_piece, _) = image_pieces
+            .par_iter()
+            .enumerate()
+            .map(|(index, image_piece)| {
+                let sub_img = crop_image(
+                    &org_image,
+                    current_x,
+                    current_y,
+                    image_piece.width(),
+                    image_piece.height(),
+                );
+                let calc_score = parallel_mse(&sub_img, &image_piece);
+                (index, image_piece.clone(), calc_score)
+            })
+            .reduce(
+                || (0, DynamicImage::new_rgb8(0, 0), f64::MAX),
+                |(index1, piece1, score1), (index2, piece2, score2)| {
+                    if score1 < score2 {
+                        (index1, piece1, score1)
+                    } else {
+                        (index2, piece2, score2)
+                    }
+                },
             );
-            // display_image(&sub_img);
-            // display_image(&image_piece);
-            let calc_score = parallel_mse(&sub_img, &image_piece);
-
-            if max_score > calc_score {
-                match_piece = image_piece.clone();
-                match_index = index;
-                max_score = calc_score;
-                println!("max_score: {}", max_score);
-            }
-        }
 
         place_image(&mut result_image, &match_piece, current_x, current_y);
+        display_image(&result_image, &window, false);
         current_x += match_piece.width();
         image_pieces.remove(match_index);
-
-        // display_image(&result_image);
 
         if current_x >= result_image.width() - 5 {
             current_x = 0;
@@ -58,11 +136,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    display_image(&result_image);
-
-    Ok(())
+    result_image
 }
 
+#[allow(dead_code)]
 fn parallel_mse(reference_image: &DynamicImage, test_image: &DynamicImage) -> f64 {
     if reference_image.dimensions() != test_image.dimensions() {
         return 0.0;
@@ -94,7 +171,9 @@ fn parallel_mse(reference_image: &DynamicImage, test_image: &DynamicImage) -> f6
         .into_iter()
         .map(|handel| handel.join().unwrap())
         .sum();
+
     let mse = mse_sum / (width * height) as f64;
+
     mse
 }
 
@@ -120,7 +199,6 @@ fn calculate_mse(
         }
     }
 
-    // Calculate the mean squared error
     sum_squared_diff
 }
 
@@ -208,9 +286,6 @@ fn compare_images_rgb(reference_image: &DynamicImage, test_image: &DynamicImage)
 
 #[allow(dead_code)]
 fn compare_images_his(reference_image: &DynamicImage, test_image: &DynamicImage) -> f64 {
-    display_image(&reference_image);
-    display_image(&test_image);
-
     let score = image_compare::gray_similarity_histogram(
         image_compare::Metric::ChiSquare,
         &reference_image.to_luma8(),
@@ -240,7 +315,7 @@ fn load_image(path: &str) -> image::DynamicImage {
     let mut reader = BufReader::new(file);
 
     // Read the beginning of the file to guess the format
-    let mut start = [0; 16]; // Adjust size as needed
+    let mut start = [0; 16];
     reader.read_exact(&mut start).unwrap();
     let format = image::guess_format(&start).unwrap();
 
@@ -277,21 +352,22 @@ fn crop_image(
     cropped_image
 }
 
-fn display_image(image: &DynamicImage) {
+fn display_image(image: &DynamicImage, window: &WindowProxy, wait_for_esc: bool) {
     let image = ImageView::new(
         ImageInfo::rgb8(image.width(), image.height()),
         image.as_bytes(),
     );
 
-    let window = create_window("image", Default::default()).unwrap();
     let _ = window.set_image("image", image);
 
-    for event in window.event_channel().unwrap() {
-        if let event::WindowEvent::KeyboardInput(event) = event {
-            if event.input.key_code == Some(event::VirtualKeyCode::Escape)
-                && event.input.state.is_pressed()
-            {
-                break;
+    if wait_for_esc == true {
+        for event in window.event_channel().unwrap() {
+            if let event::WindowEvent::KeyboardInput(event) = event {
+                if event.input.key_code == Some(event::VirtualKeyCode::Escape)
+                    && event.input.state.is_pressed()
+                {
+                    break;
+                }
             }
         }
     }
