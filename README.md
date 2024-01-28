@@ -16,7 +16,7 @@ This is a project for the course "Parallel and Distributed Algorithm and Program
 
 ## Running
 
-To run the program, locate the directory `image-reconstruction/` and run the following command:
+To run the program, locate the directory `puzla/` and run the following command:
 
 ```sh
 cargo run --release
